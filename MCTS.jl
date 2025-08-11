@@ -11,6 +11,7 @@ end
 
 mutable struct MCTSNode
     state
+    action
     parent::Union{MCTSNode, Nothing}
     children::Dict{Int, MCTSNode}
     visits::Int
@@ -18,15 +19,18 @@ mutable struct MCTSNode
     depth::Int
 end
 
-function MCTSNode(state, parent::Union{MCTSNode, Nothing}=nothing)
-    children = Dict()
+function MCTSNode(state = nothing, action = nothing, parent::Union{MCTSNode, Nothing}=nothing)::MCTSNode
+    children = Dict{Int,MCTSNode}()
     visits = 0
     value = 0.0
     depth = parent === nothing ? 0 : parent.depth + 1
-    return MCTSNode(state, parent, children, visits, value, depth)
+    return MCTSNode(state, action, parent, children, visits, value, depth)
 end
 
-function is_fully_expanded(Node::MCTSNode, config::MCTSConfig)
+function is_fully_expanded(Node::MCTSNode, config::MCTSConfig)::Bool
+    """
+    Checks if a node has had all its children visited at least once 
+    """
     if length(Node.children) == length(config.MDP.actions)
         return true
     else 
@@ -37,14 +41,17 @@ end
 function best_child(node::MCTSNode, config::MCTSConfig)
     """Used during in-tree pahse to select child-node"""
     @assert is_fully_expanded(node, config)
+
     score_function = config.score_function
+    actions = collect(keys(node.children))
     children = collect(values(node.children))
-    scores = [
-        score_function(child.value, child.visits, node.visits, config.c_param) for child in children 
-    ]
-    action = argmax(scores)
-    return action, node.children[action]
+    scores = [score_function(c.value, c.visits, node.visits, config.c_param) for c in children]
+    i = argmax(scores)
+    # println(scores)
+    return actions[i], children[i]
 end 
+
+
 
 function Base.show(io::IO, node::MCTSNode)
     print(io, "d=$(node.depth) n=$(node.visits) v=$(node.value)")
@@ -73,25 +80,21 @@ end
 function simulate(state, config::MCTSConfig, depth)
     """Simulate a rollout from leaf node using rollout policy"""
     total_reward = 0.0
+    discount = 1.0
     for d in 1:depth
         action = sample_next_action(config.rollout_policy, state)
-        
-        # get reward 
         reward = config.MDP.reward_function(state, action)
-        total_reward += config.MDP.gamma^d * reward
-
-        # sample next state 
-        next_state = sample_next_state(config.MDP.dynamics, state, action)
-
-        state = next_state
+        total_reward += discount * reward
+        discount *= config.MDP.gamma
+        state = sample_next_state(config.MDP.dynamics, state, action)
         if d == config.max_depth
-            break 
-        end 
-    end    
+            break
+        end
+    end
     return total_reward
 end
 
-function expand(node::MCTSNode, config::MCTSConfig)
+function expand(node::MCTSNode, state, config::MCTSConfig)
     """Expand the node by trying an untried action and creating a new child."""
     tried_actions = collect(keys(node.children))
     untried_actions = [a for a in config.MDP.actions if a ∉ tried_actions]
@@ -100,17 +103,15 @@ function expand(node::MCTSNode, config::MCTSConfig)
     # sample random action from untried actions 
     action = rand(untried_actions)
 
-    # get immediate reward 
-    reward = config.MDP.reward_function(node.state, action)
-
-    # Sample the next state based on transition probabilities
-    next_state = sample_next_state(config.MDP.dynamics, node.state, action)
+    # # get immediate reward from action
+    reward = config.MDP.reward_function(state, action)
 
     # create child node
-    child_node = MCTSNode(next_state, node)
+    child_node = MCTSNode(nothing, nothing, node)
     node.children[action] = child_node 
-    return child_node, reward
+    return action, child_node, reward
 end
+
 
 function backpropagate(trajectory::Array, rollout_reward::Real, config::MCTSConfig)
     """
@@ -131,30 +132,40 @@ function best_actions(root::MCTSNode, config::MCTSConfig, iterations=100)
     for _ in 1:iterations
         node = root
         trajectory = []
+        state = node.state
 
+        # Selection phase: traverse the tree selecting actions according to score function
         while is_fully_expanded(node, config) && !isempty(node.children) && node.depth < config.max_depth
             (action, child) = best_child(node, config)
-            ## FIX this 
-            reward = config.MDP.reward_function(node.state, action)
-            push!(trajectory, (node, reward))
+            reward = config.MDP.reward_function(state, action)
+            next_state = sample_next_state(config.MDP.dynamics, state, action)
+            push!(trajectory, (node, reward)) # Come back: check if correct!
             node = child
+            state = next_state
         end
 
+        # Expansion: Expand the node if it's not fully expanded
         if !is_fully_expanded(node, config) && node.depth < config.max_depth
-            child, expanded_reward = expand(node, config)
+            action, child, expanded_reward = expand(node, state, config)
             push!(trajectory, (node, expanded_reward))
-            node = child
+            next_state = sample_next_state(config.MDP.dynamics, state, action)
+            node = child  
+            state = next_state
         end
 
-        rollout_reward = simulate(node.state, config, config.max_depth - node.depth)
+
+        # Simulation: Perform a random rollout from the child node 
+        # of the newly expanded node 
+        rollout_reward = simulate(state, config, config.max_depth - node.depth)
         backpropagate(trajectory, rollout_reward, config)
     end
-    # if root.state == 2 
-    #     println("Action 1", root.children[1])
-    #     println("Action 2", root.children[2])
-    # end
 
-    values = [root.children[action].value / root.children[action].visits for action in config.MDP.actions]
+    values = [
+        haskey(root.children, a) ? root.children[a].value / root.children[a].visits : -Inf
+        for a in config.MDP.actions
+    ]
+
+    # Choose the action leading to the best child
     best_action = argmax(values)
     return best_action
 end
