@@ -1,6 +1,8 @@
 include("project.jl")
 include("MDP.jl")
-
+#######################
+# Main MCTS functions #
+#######################
 struct MCTSConfig
     MDP::MDP
     rollout_policy::Array
@@ -47,11 +49,8 @@ function best_child(node::MCTSNode, config::MCTSConfig)
     children = collect(values(node.children))
     scores = [score_function(c.value, c.visits, node.visits, config.c_param) for c in children]
     i = argmax(scores)
-    # println(scores)
     return actions[i], children[i]
 end 
-
-
 
 function Base.show(io::IO, node::MCTSNode)
     print(io, "d=$(node.depth) n=$(node.visits) v=$(node.value)")
@@ -59,7 +58,7 @@ end
 
 function sample_next_state(dynamics, state, action)
     """
-    Used in expansion phase to select random unvisited action 
+    Sample next state based on dynamics, current state and action
     """
     probs = dynamics[:, state, action]
     dist = Categorical(probs)
@@ -69,7 +68,7 @@ end
 
 function sample_next_action(rollout_policy, state)
     """
-    Used in rollout phase to simulate return following a rollout policy
+    Sample next action from state using rollout policy
     """
     probs = rollout_policy[state, :]
     dist = Categorical(probs)
@@ -95,21 +94,26 @@ function simulate(state, config::MCTSConfig, depth)
 end
 
 function expand(node::MCTSNode, state, config::MCTSConfig)
-    """Expand the node by trying an untried action and creating a new child."""
     tried_actions = collect(keys(node.children))
     untried_actions = [a for a in config.MDP.actions if a ∉ tried_actions]
     @assert !isempty(untried_actions)
 
-    # sample random action from untried actions 
+    # Pick a random untried action
     action = rand(untried_actions)
 
-    # # get immediate reward from action
+    # Sample next state
+    next_state = sample_next_state(config.MDP.dynamics, state, action)
     reward = config.MDP.reward_function(state, action)
 
-    # create child node
-    child_node = MCTSNode(nothing, nothing, node)
-    node.children[action] = child_node 
-    return action, child_node, reward
+    # Store state only if deterministic
+    if config.MDP.is_deterministic
+        child_node = MCTSNode(next_state, action, node)
+    else
+        child_node = MCTSNode(nothing, action, node)  # state not stored
+    end
+
+    node.children[action] = child_node
+    return action, child_node, reward, next_state
 end
 
 
@@ -126,46 +130,41 @@ function backpropagate(trajectory::Array, rollout_reward::Real, config::MCTSConf
 end
 
 function best_actions(root::MCTSNode, config::MCTSConfig, iterations=100)
-    """
-    Estimate and return the best action from a root node 
-    """
     for _ in 1:iterations
         node = root
         trajectory = []
         state = node.state
 
-        # Selection phase: traverse the tree selecting actions according to score function
+        # Selection phase
         while is_fully_expanded(node, config) && !isempty(node.children) && node.depth < config.max_depth
             (action, child) = best_child(node, config)
             reward = config.MDP.reward_function(state, action)
             next_state = sample_next_state(config.MDP.dynamics, state, action)
-            push!(trajectory, (node, reward)) # Come back: check if correct!
+            push!(trajectory, (node, reward))
             node = child
-            state = next_state
+            state = config.MDP.is_deterministic ? node.state : next_state
         end
 
-        # Expansion: Expand the node if it's not fully expanded
+        # Expansion
         if !is_fully_expanded(node, config) && node.depth < config.max_depth
-            action, child, expanded_reward = expand(node, state, config)
+            action, child, expanded_reward, next_state = expand(node, state, config)
             push!(trajectory, (node, expanded_reward))
-            next_state = sample_next_state(config.MDP.dynamics, state, action)
-            node = child  
-            state = next_state
+            node = child
+            state = config.MDP.is_deterministic ? node.state : next_state
         end
 
-
-        # Simulation: Perform a random rollout from the child node 
-        # of the newly expanded node 
+        # Simulation
         rollout_reward = simulate(state, config, config.max_depth - node.depth)
+
+        # Backprop
         backpropagate(trajectory, rollout_reward, config)
     end
 
+    # Pick best action by average value
     values = [
         haskey(root.children, a) ? root.children[a].value / root.children[a].visits : -Inf
         for a in config.MDP.actions
     ]
-
-    # Choose the action leading to the best child
-    best_action = argmax(values)
-    return best_action
+    return argmax(values)
 end
+

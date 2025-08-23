@@ -1,14 +1,15 @@
 
 struct MDP
-    horizon::Int
+    horizon
     actions::Vector{Int}
     states::Vector{Int}
     reward_function::Function # a function of (s,a)
     gamma::Real
     dynamics::Array{Float64, 3} # [s',s,a] entry corresponds to p(s'|s,a)
+    is_deterministic::Bool # transitions are(n't) deterministic
 end 
 
-function random_MDP(num_states::Int, num_actions::Int; γ = 0.95, deterministic = false, horizon::Int = Inf)::MDP
+function random_MDP(num_states::Int, num_actions::Int; γ = 0.95, is_deterministic::Bool = false, horizon = Inf)::MDP
     """
     Generates a random MDP 
     """
@@ -17,7 +18,7 @@ function random_MDP(num_states::Int, num_actions::Int; γ = 0.95, deterministic 
 
     # Random dynamics: shape (s′, s, a)
     dynamics = zeros(Float64, num_states, num_states, num_actions)
-    if deterministic
+    if is_deterministic
         for s in 1:num_states, a in 1:num_actions
             next_state = rand(1:num_states)
             for s′ in 1:num_states 
@@ -35,7 +36,7 @@ function random_MDP(num_states::Int, num_actions::Int; γ = 0.95, deterministic 
     rewards = randn(num_states, num_actions)
     reward_fn = (s, a) -> rewards[s, a]
 
-    return MDP(horizon, actions, states, reward_fn, γ, dynamics)
+    return MDP(horizon, actions, states, reward_fn, γ, dynamics, is_deterministic)
 end
 
 function random_rollout(mdp::MDP)
