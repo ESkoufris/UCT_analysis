@@ -66,6 +66,13 @@ function sample_next_state(dynamics, state, action)
     return next_state
 end
 
+function sample_reward(MDP::MDP, state, action)
+    probs = MDP.reward_dynamics[state, action, :]
+    dist = Categorical(probs)
+    i = rand(dist)
+    return MDP.rewards[i]
+end
+
 function sample_next_action(rollout_policy, state)
     """
     Sample next action from state using rollout policy
@@ -82,13 +89,14 @@ function simulate(state, config::MCTSConfig, depth)
     discount = 1.0
     for d in 1:depth
         action = sample_next_action(config.rollout_policy, state)
-        reward = config.MDP.reward_function(state, action)
+        reward = sample_reward(config.MDP, state, action)
         total_reward += discount * reward
         discount *= config.MDP.gamma
-        state = sample_next_state(config.MDP.dynamics, state, action)
         if d == config.max_depth
             break
         end
+        next_state = sample_next_state(config.MDP.dynamics, state, action)
+        state = next_state
     end
     return total_reward
 end
@@ -101,9 +109,11 @@ function expand(node::MCTSNode, state, config::MCTSConfig)
     # Pick a random untried action
     action = rand(untried_actions)
 
-    # Sample next state
+    # sample next state
     next_state = sample_next_state(config.MDP.dynamics, state, action)
-    reward = config.MDP.reward_function(state, action)
+    
+    # sample reward
+    reward = sample_reward(config.MDP, state, action)
 
     # Store state only if deterministic
     if config.MDP.is_deterministic
@@ -138,7 +148,7 @@ function best_actions(root::MCTSNode, config::MCTSConfig, iterations=100)
         # Selection phase
         while is_fully_expanded(node, config) && !isempty(node.children) && node.depth < config.max_depth
             (action, child) = best_child(node, config)
-            reward = config.MDP.reward_function(state, action)
+            reward = sample_reward(config.MDP, state, action)
             next_state = sample_next_state(config.MDP.dynamics, state, action)
             push!(trajectory, (node, reward))
             node = child

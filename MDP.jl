@@ -3,41 +3,64 @@ struct MDP
     horizon
     actions::Vector{Int}
     states::Vector{Int}
-    reward_function::Function # a function of (s,a)
+    rewards
+    reward_dynamics # [s, a] 
     gamma::Real
     dynamics::Array{Float64, 3} # [s',s,a] entry corresponds to p(s'|s,a)
     is_deterministic::Bool # transitions are(n't) deterministic
 end 
 
-function random_MDP(num_states::Int, num_actions::Int; γ = 0.95, is_deterministic::Bool = false, horizon = Inf)::MDP
+function random_MDP(num_states::Int, 
+                    num_actions::Int; 
+                    γ = 0.95, 
+                    is_deterministic::Bool = false, 
+                    horizon = Inf, 
+                    bernoulli_rewards::Bool = true)::MDP
     """
     Generates a random MDP 
     """
     states = collect(1:num_states)
     actions = collect(1:num_actions)
 
-    # Random dynamics: shape (s′, s, a)
+    # Transition dynamics
     dynamics = zeros(Float64, num_states, num_states, num_actions)
     if is_deterministic
         for s in 1:num_states, a in 1:num_actions
             next_state = rand(1:num_states)
-            for s′ in 1:num_states 
-                dynamics[s′, s, a] = (s′ == next_state)
+            for s′ in 1:num_states
+                dynamics[s′, s, a] = (s′ == next_state) ? 1.0 : 0.0
             end
         end
     else
         for s in 1:num_states, a in 1:num_actions
             probs = rand(num_states)
-            dynamics[:, s, a] .= probs ./ sum(probs)  # Normalize to sum to 1
+            dynamics[:, s, a] .= probs ./ sum(probs)
         end
     end
 
-    # Random reward function: r(s, a)
-    rewards = randn(num_states, num_actions)
-    reward_fn = (s, a) -> rewards[s, a]
+    # Reward distribution for each s,a
+    if bernoulli_rewards
+        rewards = [0,1]
+        reward_dynamics = zeros(Float64, num_states, num_actions, 2)
+        for s in 1:num_states, a in 1:num_actions
+            # generate random Bernoulli parameter
+            p = rand()
+            reward_dynamics[s, a, :] = [p, 1 - p]
+        end
+    end 
 
-    return MDP(horizon, actions, states, reward_fn, γ, dynamics, is_deterministic)
+    return MDP(horizon, actions, states, rewards, reward_dynamics, γ, dynamics, is_deterministic)
 end
+
+function get_reward_function(MDP::MDP)::Function
+    reward_dynamics = MDP.reward_dynamics
+    rewards = MDP.rewards 
+    function r(s,a)
+        expected_reward = dot(rewards, reward_dynamics[s,a,:])
+    end 
+    return r
+end
+
 
 function random_rollout(mdp::MDP)
     """
